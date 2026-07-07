@@ -1,0 +1,11 @@
+services:
+  temp-frontend:
+    image: nginx:alpine
+    container_name: codemaker-temp-frontend
+    ports:
+      - "5173:80"
+    volumes:
+      - ./temp_frontend:/usr/share/nginx/html:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
