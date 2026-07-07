@@ -1,0 +1,51 @@
+[project]
+name = "codemaker-coach-agent"
+version = "0.1.0"
+description = "LLM 기반 코딩테스트 문제 생성·검증 및 풀이 지원 Agent 학습 플랫폼"
+requires-python = ">=3.12"
+dependencies = [
+    # LLM / Agent
+    "langchain>=0.3",
+    "langgraph>=0.2",
+    "langchain-anthropic>=0.2",
+    "langchain-openai>=0.2",
+    # RAG / Vector store
+    "langchain-qdrant>=0.2",
+    "qdrant-client>=1.11",
+    # API
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    # 데이터 / 검증 / 설정
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    "sqlalchemy>=2",
+    "alembic>=1.13",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# 로컬 공용 패키지를 top-level import 이름으로 노출 (import agent / rag / graphrag)
+[tool.hatch.build.targets.wheel]
+packages = [
+    "packages/agent",
+    "packages/rag",
+    "packages/graphrag",
+    "packages/config",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["packages", "apps/api"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
