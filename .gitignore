@@ -1,0 +1,25 @@
+# 기획 원문 (비공개)
+docs/주제 선정.pdf
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# 환경변수 / 시크릿
+.env
+.env.*
+!.env.example
+
+# Node / 프론트엔드
+node_modules/
+.next/
+out/
+
+# OS / 에디터
+.DS_Store
+.idea/
+.vscode/

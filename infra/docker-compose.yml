@@ -1,0 +1,100 @@
+# CodeMaker Coach Agent — 로컬 인프라
+# 실행: docker compose -f infra/docker-compose.yml up -d
+#
+# 네트워크 분리 (NFR-2): 앱 서비스(app-net)와 Judge0 샌드박스(judge0-net)를 분리한다.
+# API는 호스트 포트로 Judge0(2358)에 접근한다.
+
+services:
+  # ── 앱 관계형 DB ───────────────────────────────
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: codemaker
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [app-net]
+
+  # ── 벡터 스토어 (RAG: 개념 + 힌트 색인) ────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [app-net]
+
+  # ── Judge0 채점 스택 (server / workers / db / redis) ──
+  # 주의: isolate 샌드박스 때문에 privileged 필요. macOS Docker Desktop에서는
+  #       host cgroup 설정이 필요할 수 있다. (infra/README.md 참고)
+  judge0-server:
+    image: judge0/judge0:1.13.1
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    ports:
+      - "2358:2358"
+    privileged: true
+    restart: unless-stopped
+    depends_on: [judge0-db, judge0-redis]
+    networks: [judge0-net]
+
+  judge0-workers:
+    image: judge0/judge0:1.13.1
+    command: ["./scripts/workers"]
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    privileged: true
+    restart: unless-stopped
+    depends_on: [judge0-db, judge0-redis]
+    networks: [judge0-net]
+
+  judge0-db:
+    image: postgres:16
+    env_file: judge0.conf
+    volumes:
+      - judge0-postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks: [judge0-net]
+
+  judge0-redis:
+    image: redis:7
+    command: ["redis-server", "--appendonly", "no"]
+    restart: unless-stopped
+    networks: [judge0-net]
+
+  # ── Graph RAG (확장, 기본 비활성: profiles) ────
+  neo4j:
+    image: neo4j:5
+    environment:
+      NEO4J_AUTH: neo4j/please_change_me
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j-data:/data
+    profiles: ["graphrag"]
+    networks: [app-net]
+
+volumes:
+  postgres-data:
+  qdrant-data:
+  judge0-postgres-data:
+  neo4j-data:
+
+networks:
+  app-net:
+  judge0-net:
