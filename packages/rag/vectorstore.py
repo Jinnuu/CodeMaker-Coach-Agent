@@ -44,11 +44,23 @@ def get_vectorstore(collection_name: str) -> Any:
         client = QdrantClient(
             url=settings.qdrant_url, 
             api_key=settings.qdrant_api_key or None,
-            timeout=1.0
+            timeout=5.0  # 부트스트랩 시 넉넉하게 5초 설정
         )
         
         # Ping the server
         client.get_collections()
+
+        # 컬렉션 존재 여부 확인 후 자동 생성
+        try:
+            client.get_collection(collection_name)
+        except Exception:
+            # 컬렉션이 없으면 새로 생성 (OpenAI Embeddings 규격 1536 차원 적용)
+            from qdrant_client.models import Distance, VectorParams
+            client.create_collection(
+                collection_name=collection_name,
+                vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
+            )
+            logger.info(f"Created Qdrant collection: {collection_name}")
         
         # Initialize and return QdrantVectorStore
         return QdrantVectorStore(
