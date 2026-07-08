@@ -11,6 +11,7 @@ class ProblemGenerationInput(BaseModel):
     learning_goal: Optional[str] = Field(default=None, description="Learning objective, e.g. parametric search, boundary conditions")
     user_level: Optional[str] = Field(default=None, description="Skill level of the user")
     recent_weaknesses: List[str] = Field(default_factory=list, description="List of user's recent weak concepts")
+    recent_errors: List[str] = Field(default_factory=list, description="List of user's recent error types")
     seed: Optional[str] = Field(default=None, description="Random seed or nonce to ensure unique variant generation")
     avoid_problem_ids: List[str] = Field(default_factory=list, description="List of problem IDs to avoid repeating")
     force_new: bool = Field(default=False, description="Force generation of a new problem even if cache exists")
@@ -598,6 +599,7 @@ class ProblemGenerationPackageInput(BaseModel):
     learning_goal: Optional[str] = None
     user_level: Optional[str] = None
     recent_weaknesses: List[str] = Field(default_factory=list)
+    recent_errors: List[str] = Field(default_factory=list)
     include_hints: bool = True
     include_concept_context: bool = True
     max_validation_attempts: int = 2
