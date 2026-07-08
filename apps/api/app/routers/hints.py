@@ -56,34 +56,29 @@ def _get_or_create_progress(user_id: int, problem_id: str, db: Session) -> HintP
     return progress
 
 
-@router.post("/request", status_code=status.HTTP_200_OK)
-async def request_hint(
-    body: HintRequestPackageInput,
-    user_id: int = Depends(get_current_user_id),
-    db: Session = Depends(get_db),
-    gateway: AgentGateway = Depends(_dep_gateway),
-) -> dict:
-    """챗봇형 힌트 요청 — Agent 패키지의 비동기 request_hint_package() 호출.
+def _deduplicate_hints(hints: List[Hint]) -> List[Hint]:
+    """레벨별로 중복된 힌트가 DB에 적재되어 있더라도 최초 1개씩만 남기고 필터링한다."""
+    seen = set()
+    deduped = []
+    for h in hints:
+        if h.level not in seen:
+            seen.add(h.level)
+            deduped.append(h)
+    return sorted(deduped, key=lambda x: x.level)
 
-    서버 측에서 DB의 allowed_level을 강제 조회하여 body의 allowed_level을 덮어씌운다.
-    requested_level이 allowed_level보다 큰 경우 차단(blocked) 응답을 반환한다.
-    """
-    problem = db.get(Problem, body.problem_id)
-    if not problem:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="문제를 찾을 수 없습니다.")
 
-    progress = _get_or_create_progress(user_id, body.problem_id, db)
-
-    # Enforce allowed_level server-side!
-    body.allowed_level = progress.allowed_level
-
-    # 힌트가 이 문제에 하나도 저장되어 있지 않은지 확인 (레벨 무관, 존재 여부만).
-    # 실제로 서비스에 넘길 힌트는 아래에서 allowed_level 이하로만 다시 조회한다.
-    has_any_hint = db.query(Hint.id).filter(Hint.problem_id == body.problem_id).first() is not None
-
-    if not has_any_hint:
-        # 힌트가 없으면 Agent로 생성 후 저장
-        from agent.schemas import GeneratedProblem, HintBlueprint
+async def _get_or_generate_hints(
+    problem_id: str,
+    problem: Problem,
+    db: Session,
+    gateway: AgentGateway,
+) -> List[Hint]:
+    """DB에서 힌트를 조회하고, 없으면 예외 및 중복 방지 처리를 거쳐 실시간 생성 후 반환한다."""
+    hints = db.query(Hint).filter(Hint.problem_id == problem_id).all()
+    
+    if not hints:
+        from agent.schemas import GeneratedProblem, HintBlueprint, Hint as AgentHint
+        
         generated = GeneratedProblem(
             problem_id=problem.id,
             title=problem.title,
@@ -99,39 +94,71 @@ async def request_hint(
             expected_time_complexity=problem.expected_time_complexity,
             hint_blueprint=HintBlueprint(
                 intended_algorithm=problem.algorithm,
-                core_insight="",
-                common_misconceptions=[],
-                edge_case_focus=[],
-                forbidden_disclosures=[],
-                level_1_guidance="",
-                level_2_guidance="",
-                level_3_guidance="",
+                core_insight=problem.learning_goal or "알고리즘 구현을 위한 접근 방식",
+                common_misconceptions=["시간 복잡도 초과", "경계 조건 처리 누락", "인덱스 범위 접근 초과"],
+                edge_case_focus=["빈 배열/빈 입력 값", "단일 원소", "최대/최소 경계값"],
+                forbidden_disclosures=["완전한 정답 소스 코드", "직접 카피 가능한 구현체"],
+                level_1_guidance="문제의 핵심 요구사항과 접근 방식을 생각해보세요.",
+                level_2_guidance="알고리즘 구현 시 필요한 핵심 자료구조와 탐색 흐름을 설계해보세요.",
+                level_3_guidance="인덱스 범위와 예외 조건 처리에 주의하여 스켈레톤 빈칸을 채워보세요.",
             ),
         )
-        hint_bundle = await gateway.generate_hints(generated, allowed_level=3)
-        for h in hint_bundle.hints:
+        
+        try:
+            hint_bundle = await gateway.generate_hints(generated, allowed_level=3)
+            raw_hints = hint_bundle.hints
+        except Exception as llm_err:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to generate hints in router, falling back to static hints: {llm_err}")
+            raw_hints = [
+                AgentHint(problem_id=problem_id, level=1, title="접근 힌트", content="문제 요구사항을 쪼개어 단순한 케이스부터 생각해보세요."),
+                AgentHint(problem_id=problem_id, level=2, title="알고리즘 힌트", content="핵심 의도인 알고리즘 분류에 맞추어 설계를 구체화하세요."),
+                AgentHint(problem_id=problem_id, level=3, title="구현 스켈레톤", content="아래의 구조를 토대로 작성해보세요.", code_skeleton="pass # TODO: 여기에 코드를 작성하세요.")
+            ]
+
+        # 중복 저장 방지: 저장 직전 기존 찌꺼기 힌트 일괄 삭제
+        db.query(Hint).filter(Hint.problem_id == problem_id).delete()
+        db.flush()
+
+        for h in raw_hints:
             db.add(Hint(
-                problem_id=body.problem_id,
+                problem_id=problem_id,
                 level=h.level,
                 title=h.title,
                 content=h.content,
                 reveals_core_code=False,
                 code_skeleton=h.code_skeleton,
-                concept_refs=h.concept_refs,
-                source=h.source,
+                concept_refs=h.concept_refs or [],
+                source=h.source or "generated",
             ))
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            
+        hints = db.query(Hint).filter(Hint.problem_id == problem_id).all()
+        
+    return _deduplicate_hints(hints)
 
-    # 허용 단계 이하 힌트만 조회한다 — 상위 단계 힌트는 애초에 조회 대상에서
-    # 물리적으로 제외하여, 이후 서비스 계층 필터링에만 의존하지 않는다 (FR-18, NFR-4).
-    hints = (
-        db.query(Hint)
-        .filter(Hint.problem_id == body.problem_id, Hint.level <= progress.allowed_level)
-        .order_by(Hint.level)
-        .all()
-    )
 
-    # Convert DB Hint models to agent.schemas.Hint objects
+@router.post("/request", status_code=status.HTTP_200_OK)
+async def request_hint(
+    body: HintRequestPackageInput,
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+    gateway: AgentGateway = Depends(_dep_gateway),
+) -> dict:
+    """챗봇형 힌트 요청 — Agent 패키지의 비동기 request_hint_package() 호출."""
+    problem = db.get(Problem, body.problem_id)
+    if not problem:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="문제를 찾을 수 없습니다.")
+
+    progress = _get_or_create_progress(user_id, body.problem_id, db)
+    body.allowed_level = progress.allowed_level
+
+    all_hints = await _get_or_generate_hints(body.problem_id, problem, db, gateway)
+    allowed_hints = [h for h in all_hints if h.level <= progress.allowed_level]
+
     from agent.schemas import Hint as AgentHint
     agent_hints = [
         AgentHint(
@@ -144,7 +171,7 @@ async def request_hint(
             concept_refs=h.concept_refs or [],
             source=h.source or "db"
         )
-        for h in hints
+        for h in allowed_hints
     ]
 
     package = await request_hint_package(body, generated_hints=agent_hints)
@@ -172,11 +199,7 @@ async def get_hints(
     db: Session = Depends(get_db),
     gateway: AgentGateway = Depends(_dep_gateway),
 ) -> List[HintResponse]:
-    """허용 단계 이하의 힌트 목록 반환.
-
-    DB에 저장된 힌트를 우선 사용하고, 없으면 Agent로 생성 후 저장한다.
-    어떤 경우에도 allowed_level 초과 힌트는 반환하지 않는다 (NFR-4).
-    """
+    """허용 단계 이하의 힌트 목록 반환."""
     problem = db.get(Problem, problem_id)
     if not problem:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="문제를 찾을 수 없습니다.")
@@ -184,65 +207,9 @@ async def get_hints(
     progress = _get_or_create_progress(user_id, problem_id, db)
     allowed = progress.allowed_level
 
-    # DB에서 허용 단계 이하 힌트만 조회 (물리적 필터 — FR-18)
-    hints = (
-        db.query(Hint)
-        .filter(Hint.problem_id == problem_id, Hint.level <= allowed)
-        .order_by(Hint.level)
-        .all()
-    )
-
-    if not hints:
-        # 힌트가 없으면 Agent로 생성 후 저장
-        from app.models.problem import Problem as ProblemModel
-        from agent.schemas import GeneratedProblem, HintBlueprint, ProblemGenerationInput
-        # 최소한의 GeneratedProblem 재구성
-        generated = GeneratedProblem(
-            problem_id=problem.id,
-            title=problem.title,
-            difficulty=problem.difficulty,
-            algorithm=problem.algorithm,
-            learning_goal=problem.learning_goal,
-            statement=problem.statement,
-            input_format=problem.input_format,
-            output_format=problem.output_format,
-            constraints=problem.constraints,
-            sample_input=problem.sample_input,
-            sample_output=problem.sample_output,
-            expected_time_complexity=problem.expected_time_complexity,
-            hint_blueprint=HintBlueprint(
-                intended_algorithm=problem.algorithm,
-                core_insight="",
-                common_misconceptions=[],
-                edge_case_focus=[],
-                forbidden_disclosures=[],
-                level_1_guidance="",
-                level_2_guidance="",
-                level_3_guidance="",
-            ),
-        )
-        hint_bundle = await gateway.generate_hints(generated, allowed_level=3)
-        for h in hint_bundle.hints:
-            db.add(Hint(
-                problem_id=problem_id,
-                level=h.level,
-                title=h.title,
-                content=h.content,
-                reveals_core_code=False,
-                code_skeleton=h.code_skeleton,
-                concept_refs=h.concept_refs,
-                source=h.source,
-            ))
-        db.commit()
-
-        hints = (
-            db.query(Hint)
-            .filter(Hint.problem_id == problem_id, Hint.level <= allowed)
-            .order_by(Hint.level)
-            .all()
-        )
-
-    return [HintResponse.model_validate(h) for h in hints]
+    all_hints = await _get_or_generate_hints(problem_id, problem, db, gateway)
+    allowed_hints = [h for h in all_hints if h.level <= allowed]
+    return [HintResponse.model_validate(h) for h in allowed_hints]
 
 
 @router.post("/{problem_id}/unlock", response_model=HintProgressResponse)
