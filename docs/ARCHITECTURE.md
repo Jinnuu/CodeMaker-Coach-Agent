@@ -201,12 +201,12 @@ ProblemReport   : id, user_id, problem_id, reason, created_at
 
 ### 8.1 전체 시스템 구조 & 흐름
 * **전체 시스템 구성도**
-  ![전체 시스템 구성도](images/system_architecture.jpg)
+  ![전체 시스템 구성도](architecture-picture/overall_system_architecture.png)
 * **전체 시퀀스 다이어그램**
-  ![전체 시퀀스 다이어그램](images/system_sequence.jpg)
+  ![전체 시퀀스 다이어그램](architecture-picture/overall_system_sequence.png)
 
 ### 8.2 신고 중재(Moderation) 에이전트 구조 & 흐름 (Human-in-the-Loop)
 * **신고 중재 에이전트 구성도**
-  ![신고 중재 에이전트 구성도](images/moderation_architecture.jpg)
+  ![신고 중재 에이전트 구성도](architecture-picture/moderation_system_architecture.png)
 * **신고 중재 시퀀스 다이어그램**
-  ![신고 중재 시퀀스 다이어그램](images/moderation_sequence.jpg)
+  ![신고 중재 시퀀스 다이어그램](architecture-picture/moderation_system_sequence.png)
