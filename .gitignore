@@ -31,3 +31,5 @@ out/
 *.sh
 !apps/api/docker-entrypoint.sh
 project_context.txt
+
+/문제점
